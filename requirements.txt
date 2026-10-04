@@ -1,0 +1,7 @@
+# FileMind V1 依赖（Windows 10 免管理员安装：pip install --user -r requirements.txt）
+python-docx>=1.1      # docx 文本提取
+openpyxl>=3.1         # xlsx 文本提取
+python-pptx>=0.6.23   # pptx 文本提取
+pypdf>=4.0            # pdf 文本提取（纯 Python，无需管理员）
+send2trash>=1.8       # 移入 Windows 回收站（纯 Python wheel）
+customtkinter>=5.0    # 桌面原生窗口版（现代化深色主题）
