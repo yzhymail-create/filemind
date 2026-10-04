@@ -14,7 +14,7 @@ class DupsPanel(ctk.CTkFrame):
         self.check_vars = {}  # (gi, file_id) -> BooleanVar
 
         self._create_widgets()
-        self._load_dups()
+        self._load_dups_async()  # 异步加载
 
     def _create_widgets(self):
         # 标题
@@ -61,7 +61,9 @@ class DupsPanel(ctk.CTkFrame):
         )
         self.status_label.pack(side="right", padx=10)
 
-    def _load_dups(self):
+    def _load_dups_async(self):
+        """异步加载重复文件（后台线程）"""
+        # 清空当前内容
         for widget in self.dups_frame.winfo_children():
             widget.destroy()
         self.check_vars.clear()
@@ -74,88 +76,121 @@ class DupsPanel(ctk.CTkFrame):
             ).pack(pady=40)
             return
 
-        try:
-            from filemind import db as dbmod
-            from filemind import chains as chainsmod
-            from filemind import recommend as recmod
+        # 显示加载中
+        self.loading_label = ctk.CTkLabel(
+            self.dups_frame, text="正在检测重复文件，请稍候...",
+            font=ctk.CTkFont(size=14)
+        )
+        self.loading_label.pack(pady=40)
 
-            con = dbmod.connect(self.main_window.db_path)
-            groups = chainsmod.find_exact_dups(con)
-            con.close()
+        # 后台线程执行检测
+        def _do_load():
+            try:
+                from filemind import db as dbmod
+                from filemind import chains as chainsmod
+                from filemind import recommend as recmod
 
-            if not groups:
-                ctk.CTkLabel(
-                    self.dups_frame, text="没有发现完全重复的文件",
-                    font=ctk.CTkFont(size=14), text_color="gray"
-                ).pack(pady=40)
-                return
+                con = dbmod.connect(self.main_window.db_path)
+                groups = chainsmod.find_exact_dups(con)
+                con.close()
 
-            self.groups = groups
+                # 计算推荐保留（可能很慢）
+                results = []
+                for gi, g in enumerate(groups):
+                    rec = recmod.recommend_dup_keep(self.main_window.db_path, g)
+                    results.append((g, rec))
 
-            for gi, g in enumerate(groups):
-                rec = recmod.recommend_dup_keep(self.main_window.db_path, g)
-                keep_id = rec["keep"]["id"]
+                # 回到主线程更新 UI
+                self.after(0, lambda: self._on_load_done(results))
 
-                # 组卡片
-                card = ctk.CTkFrame(self.dups_frame, corner_radius=8)
-                card.pack(fill="x", pady=5, padx=10)
+            except Exception as e:
+                self.after(0, lambda: self._on_load_error(str(e)))
 
-                # 组标题
-                ctk.CTkLabel(
-                    card,
-                    text=f"第 {gi+1} 组（{len(g)} 个相同文件）",
-                    font=ctk.CTkFont(size=14, weight="bold")
-                ).pack(anchor="w", padx=10, pady=(8, 2))
+        t = threading.Thread(target=_do_load, daemon=True)
+        t.start()
 
-                ctk.CTkLabel(
-                    card,
-                    text=f"建议保留：{rec['keep']['name']} — {'；'.join(rec['reasons'])}",
-                    font=ctk.CTkFont(size=12), text_color="gray"
-                ).pack(anchor="w", padx=10, pady=(0, 5))
+    def _on_load_done(self, results):
+        """加载完成，更新 UI"""
+        # 移除加载提示
+        if hasattr(self, 'loading_label'):
+            self.loading_label.destroy()
 
-                # 每个文件一行
-                for fi, x in enumerate(g):
-                    row = ctk.CTkFrame(card, fg_color="#2a2a2a")
-                    row.pack(fill="x", padx=10, pady=2)
-
-                    var = ctk.BooleanVar(value=(x["id"] != keep_id))
-                    self.check_vars[(gi, fi)] = var
-
-                    cb = ctk.CTkCheckBox(
-                        row, text="", variable=var, width=24,
-                        command=self._update_status
-                    )
-                    cb.pack(side="left", padx=5, pady=6)
-
-                    info_frame = ctk.CTkFrame(row, fg_color="transparent")
-                    info_frame.pack(side="left", fill="x", expand=True, padx=5)
-
-                    name_text = x["name"]
-                    if x["id"] == keep_id:
-                        name_text += " ★保留"
-
-                    ctk.CTkLabel(
-                        info_frame, text=name_text,
-                        font=ctk.CTkFont(size=13), anchor="w"
-                    ).pack(anchor="w")
-
-                    ctk.CTkLabel(
-                        info_frame, text=x["path"],
-                        font=ctk.CTkFont(size=11), text_color="gray", anchor="w"
-                    ).pack(anchor="w")
-
-                    ctk.CTkLabel(
-                        info_frame, text=f"{(x['size'] or 0) // 1024} KB",
-                        font=ctk.CTkFont(size=11), text_color="gray", anchor="w"
-                    ).pack(anchor="w")
-
-            self._update_status()
-
-        except Exception as e:
+        if not results:
             ctk.CTkLabel(
-                self.dups_frame, text=f"加载失败：{e}",
-                font=ctk.CTkFont(size=14), text_color="red"
+                self.dups_frame, text="没有发现完全重复的文件",
+                font=ctk.CTkFont(size=14), text_color="gray"
             ).pack(pady=40)
+            return
+
+        # 渲染结果
+        for gi, (g, rec) in enumerate(results):
+            self.groups.append(g)
+            keep_id = rec["keep"]["id"]
+
+            # 组卡片
+            card = ctk.CTkFrame(self.dups_frame, corner_radius=8)
+            card.pack(fill="x", pady=5, padx=10)
+
+            # 组标题
+            ctk.CTkLabel(
+                card,
+                text=f"第 {gi+1} 组（{len(g)} 个相同文件）",
+                font=ctk.CTkFont(size=14, weight="bold")
+            ).pack(anchor="w", padx=10, pady=(8, 2))
+
+            ctk.CTkLabel(
+                card,
+                text=f"建议保留：{rec['keep']['name']} — {'；'.join(rec['reasons'])}",
+                font=ctk.CTkFont(size=12), text_color="gray"
+            ).pack(anchor="w", padx=10, pady=(0, 5))
+
+            # 每个文件一行
+            for fi, x in enumerate(g):
+                row = ctk.CTkFrame(card, fg_color="#2a2a2a")
+                row.pack(fill="x", padx=10, pady=2)
+
+                var = ctk.BooleanVar(value=(x["id"] != keep_id))
+                self.check_vars[(gi, fi)] = var
+
+                cb = ctk.CTkCheckBox(
+                    row, text="", variable=var, width=24,
+                    command=self._update_status
+                )
+                cb.pack(side="left", padx=5, pady=6)
+
+                info_frame = ctk.CTkFrame(row, fg_color="transparent")
+                info_frame.pack(side="left", fill="x", expand=True, padx=5)
+
+                name_text = x["name"]
+                if x["id"] == keep_id:
+                    name_text += " ★保留"
+
+                ctk.CTkLabel(
+                    info_frame, text=name_text,
+                    font=ctk.CTkFont(size=13), anchor="w"
+                ).pack(anchor="w")
+
+                ctk.CTkLabel(
+                    info_frame, text=x["path"],
+                    font=ctk.CTkFont(size=11), text_color="gray", anchor="w"
+                ).pack(anchor="w")
+
+                ctk.CTkLabel(
+                    info_frame, text=f"{(x['size'] or 0) // 1024} KB",
+                    font=ctk.CTkFont(size=11), text_color="gray", anchor="w"
+                ).pack(anchor="w")
+
+        self._update_status()
+
+    def _on_load_error(self, error_msg):
+        """加载失败"""
+        if hasattr(self, 'loading_label'):
+            self.loading_label.destroy()
+
+        ctk.CTkLabel(
+            self.dups_frame, text=f"加载失败：{error_msg}",
+            font=ctk.CTkFont(size=14), text_color="red"
+        ).pack(pady=40)
 
     def _update_status(self):
         count = sum(1 for v in self.check_vars.values() if v.get())
@@ -227,6 +262,6 @@ class DupsPanel(ctk.CTkFrame):
         if fail:
             msg += f"，{fail} 个失败"
         self.status_label.configure(text=msg)
-        self.del_btn.configure(state="normal", text="🗑 删除选中文件（移入回收站）")
-        # 刷新列表
-        self._load_dups()
+        self.del_btn.configure(state="normal", text=" 删除选中文件（移入回收站）")
+        # 重新加载
+        self._load_dups_async()
