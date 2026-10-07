@@ -28,6 +28,20 @@ class DupsPanel(ctk.CTkFrame):
             font=ctk.CTkFont(size=12), text_color="gray"
         ).pack(pady=(0, 10))
 
+        # 进度区域（加载时显示）
+        self.progress_frame = ctk.CTkFrame(self)
+        self.progress_frame.pack(fill="x", pady=10, padx=20)
+
+        self.progress_bar = ctk.CTkProgressBar(self.progress_frame, mode="indeterminate")
+        self.progress_bar.pack(fill="x", pady=5)
+
+        self.progress_label = ctk.CTkLabel(
+            self.progress_frame,
+            text="正在检测重复文件...",
+            font=ctk.CTkFont(size=14)
+        )
+        self.progress_label.pack(pady=5)
+
         # 重复文件列表（可滚动）
         self.dups_frame = ctk.CTkScrollableFrame(self)
         self.dups_frame.pack(fill="both", expand=True, pady=5)
@@ -70,18 +84,17 @@ class DupsPanel(ctk.CTkFrame):
         self.groups = []
 
         if not os.path.exists(self.main_window.db_path):
+            self.progress_frame.pack_forget()
             ctk.CTkLabel(
                 self.dups_frame, text="数据库不存在，请先扫描文件",
                 font=ctk.CTkFont(size=14), text_color="gray"
             ).pack(pady=40)
             return
 
-        # 显示加载中
-        self.loading_label = ctk.CTkLabel(
-            self.dups_frame, text="正在检测重复文件，请稍候...",
-            font=ctk.CTkFont(size=14)
-        )
-        self.loading_label.pack(pady=40)
+        # 显示进度条
+        self.progress_frame.pack(fill="x", pady=10, padx=20)
+        self.progress_bar.start()
+        self.progress_label.configure(text="正在检测重复文件，请稍候...")
 
         # 后台线程执行检测
         def _do_load():
@@ -96,9 +109,15 @@ class DupsPanel(ctk.CTkFrame):
 
                 # 计算推荐保留（可能很慢）
                 results = []
+                total = len(groups)
                 for gi, g in enumerate(groups):
                     rec = recmod.recommend_dup_keep(self.main_window.db_path, g)
                     results.append((g, rec))
+                    # 更新进度（每 10 个或最后一个）
+                    if gi % 10 == 0 or gi == total - 1:
+                        self.after(0, lambda i=gi, t=total: self.progress_label.configure(
+                            text=f"正在分析重复文件... ({i+1}/{t})"
+                        ))
 
                 # 回到主线程更新 UI
                 self.after(0, lambda: self._on_load_done(results))
@@ -111,9 +130,9 @@ class DupsPanel(ctk.CTkFrame):
 
     def _on_load_done(self, results):
         """加载完成，更新 UI"""
-        # 移除加载提示
-        if hasattr(self, 'loading_label'):
-            self.loading_label.destroy()
+        # 隐藏进度条
+        self.progress_bar.stop()
+        self.progress_frame.pack_forget()
 
         if not results:
             ctk.CTkLabel(
@@ -184,8 +203,8 @@ class DupsPanel(ctk.CTkFrame):
 
     def _on_load_error(self, error_msg):
         """加载失败"""
-        if hasattr(self, 'loading_label'):
-            self.loading_label.destroy()
+        self.progress_bar.stop()
+        self.progress_frame.pack_forget()
 
         ctk.CTkLabel(
             self.dups_frame, text=f"加载失败：{error_msg}",
@@ -224,9 +243,13 @@ class DupsPanel(ctk.CTkFrame):
         if not messagebox.askyesno("确认删除", f"确定要将 {count} 个文件移入回收站？\n（可从回收站还原）"):
             return
 
-        # 后台执行删除
-        self.del_btn.configure(state="disabled", text="删除中...")
+        # 显示进度
+        self.progress_frame.pack(fill="x", pady=10, padx=20)
+        self.progress_bar.start()
+        self.progress_label.configure(text=f"正在删除 {count} 个文件...")
+        self.del_btn.configure(state="disabled")
 
+        # 后台执行删除
         def _do_delete():
             from filemind import db as dbmod
             from filemind import trash as trashmod
@@ -234,7 +257,7 @@ class DupsPanel(ctk.CTkFrame):
             con = dbmod.connect(self.main_window.db_path)
             ok = 0
             fail = 0
-            for gi, fi in to_delete:
+            for i, (gi, fi) in enumerate(to_delete):
                 file_info = self.groups[gi][fi]
                 fid = file_info["id"]
                 r = con.execute("SELECT path FROM files WHERE id=?", (fid,)).fetchone()
@@ -250,6 +273,11 @@ class DupsPanel(ctk.CTkFrame):
                     ok += 1
                 else:
                     fail += 1
+                # 更新进度
+                if i % 5 == 0 or i == len(to_delete) - 1:
+                    self.after(0, lambda i=i, t=len(to_delete): self.progress_label.configure(
+                        text=f"正在删除文件... ({i+1}/{t})"
+                    ))
             con.commit()
             con.close()
             self.after(0, lambda: self._on_delete_done(ok, fail))
@@ -258,6 +286,9 @@ class DupsPanel(ctk.CTkFrame):
         t.start()
 
     def _on_delete_done(self, ok, fail):
+        self.progress_bar.stop()
+        self.progress_frame.pack_forget()
+
         msg = f"已移入回收站 {ok} 个"
         if fail:
             msg += f"，{fail} 个失败"

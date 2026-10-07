@@ -142,6 +142,14 @@ class MainWindow(ctk.CTk):
     def set_status(self, text: str):
         """设置状态栏文本"""
         self.status_bar.configure(text=text)
+    
+    def _trigger_scan(self):
+        """触发扫描 - 供其他面板调用"""
+        # 找到扫描面板并触发扫描
+        for widget in self.content_frame.winfo_children():
+            if hasattr(widget, '_start_scan'):
+                widget._start_scan()
+                break
 
 
 def main(db_path: str = "", port: int = 8901):

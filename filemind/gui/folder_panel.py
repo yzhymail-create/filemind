@@ -157,5 +157,8 @@ class FolderPanel(ctk.CTkFrame):
             messagebox.showerror("错误", f"删除失败：{e}")
     
     def _start_scan(self):
-        """开始扫描"""
+        """开始扫描 - 直接触发扫描面板的扫描功能"""
+        # 切换到扫描面板并直接触发扫描
         self.main_window._show_panel("scan")
+        # 延迟触发扫描，等面板加载完成
+        self.after(100, lambda: self.main_window._trigger_scan())
